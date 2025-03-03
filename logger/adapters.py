@@ -6,7 +6,6 @@ import logging.config
 from abc import ABC, abstractmethod
 
 import shortuuid
-from rq import get_current_job
 
 LoggerType = logging.Logger | logging.LoggerAdapter
 

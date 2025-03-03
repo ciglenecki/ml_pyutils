@@ -3,13 +3,11 @@ import inspect
 import json
 import os
 import random
-import sys
 from datetime import datetime
 from pathlib import Path
 from typing import Callable, Optional, TypeVar
 
 import numpy as np
-import pandas as pd
 import torch
 import yaml
 
@@ -63,7 +61,7 @@ def tensor_sum_of_elements_to_one(tensor: torch.Tensor, dim):
 
 def isfloat(x: str):
     try:
-        a = float(x)
+        float(x)
     except (TypeError, ValueError):
         return False
     else:

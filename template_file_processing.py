@@ -88,7 +88,7 @@ def process_single_file(
 
     output_path = output_metric_dir / f"{file_path.name}.json"
 
-    with open(file_path, "r") as f:
+    with open(file_path) as f:
         data = f.read()
 
     with open(output_path, "w") as f:
