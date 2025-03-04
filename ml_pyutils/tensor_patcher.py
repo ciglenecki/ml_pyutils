@@ -4,9 +4,8 @@ import dataclasses
 import functools
 import operator
 from dataclasses import dataclass
-from typing import Literal, TypedDict
+from typing import TypedDict
 
-import numpy as np
 import torch
 import torch.nn.functional as F
 from typing_extensions import Unpack
