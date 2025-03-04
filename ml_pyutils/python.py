@@ -1,24 +1,138 @@
 import argparse
 import inspect
 import json
+import math
 import os
 import random
 from datetime import datetime
 from pathlib import Path
-from typing import Callable, Optional, TypeVar
+from types import UnionType
+from typing import Any, Callable, Literal, Optional
 
 import numpy as np
 import torch
 import yaml
 
-T = TypeVar("T")
+
+def is_power_of_two(n: int) -> bool:
+    """
+    Check if a given number is a power of two.
+        AND operation between two consecutive numbers should be 0
+        because the binary representation of a power of 2 has only one 1
+        when we subtract 1 from it, we get a number with all 1s
+    """
+    return n & (n - 1) == 0 and n != 0
 
 
-def get_image_files(
+def find_closest_multiple(
+    target: float, multiple_of: int, direction: Literal["closest", "smaller", "larger"]
+) -> int:
+    """
+    Finds the closest integer number to a given target that is a multiple of `n`.
+
+    The `direction` parameter specifies whether to find the closest multiple that is smaller,
+    larger, or simply the closest (irrespective of whether it is smaller or larger).
+
+    Args:
+        target: The target number to find the closest multiple for.
+        n: The number whose multiple is to be found.
+        direction (Literal["closest", "smaller", "larger"]): The direction to consider:
+            - "closest": Finds the closest multiple of `n` to the target.
+            - "smaller": Finds the closest multiple of `n` that is smaller than or equal to the target.
+            - "larger": Finds the closest multiple of `n` that is larger than or equal to the target.
+
+    Returns:
+        int: The closest multiple of `n` to the target based on the specified direction.
+    """
+
+    if multiple_of == 0:
+        raise ValueError("n must be a non-zero integer.")
+    if direction == "closest":
+        return round(target / multiple_of) * multiple_of
+    elif direction == "smaller":
+        return math.floor(target / multiple_of) * multiple_of
+
+    elif direction == "larger":
+        return math.ceil(target / multiple_of) * multiple_of
+    else:
+        raise ValueError(
+            "Invalid direction. Choose from 'closest', 'smaller', or 'larger'."
+        )
+
+
+def is_error_or_caused_by(
+    error: BaseException,
+    error_type: type | UnionType | tuple[type[Exception], ...],
+) -> bool:
+    """
+    Check if the given error is an instance of the specified type
+    or if it was caused/reraised from an error of the specified type.
+
+    Args:
+        error (BaseException): The exception to check.
+        error_type (type): The exception type to check against.
+
+    Returns:
+        bool: True if the error is an instance or was caused by the given type.
+    """
+    current_error = error
+    while current_error:
+        if isinstance(current_error, error_type):
+            return True
+        # Check the cause (explicitly reraised exception)
+        if current_error.__cause__:
+            current_error = current_error.__cause__
+        # Check the context (implicitly reraised exception)
+        elif current_error.__context__:
+            current_error = current_error.__context__
+        else:
+            break
+    return False
+
+
+def add_note(e: Exception, note: str):
+    """
+    Adds a note to the exception message.
+    """
+    if len(e.args) >= 1:
+        message = f"{e.args[0]}\n{note}"
+        e.args = (message,) + e.args[1:]
+    else:
+        e.args = (note,)
+    return e
+
+
+def add_context(e: Exception, context: object):
+    """
+    Adds context to an exception by appending a JSON-encoded context string to the exception's message.
+    """
+    json_str = json.dumps(context, sort_keys=True, default=str)
+    message = f"\n{json_str}"
+    return add_note(e, message)
+
+
+def get_file_size_mb(file_path: str | Path) -> float:
+    """
+    file_path: str, Path to the file
+    Returns the size of the file in megabytes
+    """
+    return os.path.getsize(file_path) / float(1024 * 1024)
+
+
+def ensure_json_obj(obj: Any) -> Any:
+    """
+    transforms the object so it can be serialized to json.
+    e.g. datetime objects are converted to strings
+    e.g. path objects are converted to strings ...
+    """
+    return json.loads(json.dumps(obj, default=str))
+
+
+def get_files(
     directory: Path,
-    extensions: Optional[set[str]] = None,
+    extensions: set[str],
 ) -> list[Path]:
-    """Lists image file paths recursively in a directory.
+    """Get file paths recursively in a directory.
 
     Args:
         directory: The root directory to search for image files.
@@ -33,17 +147,10 @@ def get_image_files(
     if not directory.exists() or not directory.is_dir():
         raise ValueError(f"Invalid directory: {directory}")
 
-    if extensions is None:
-        extensions = {".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff", ".webp"}
-
     # convert all extensions to lowercase for case-insensitive comparison
     extensions = {e.lower() for e in extensions}
     paths = [file for file in directory.rglob("*") if file.suffix.lower() in extensions]
     return paths
-
-
-def min_max_scale(t: torch.Tensor | np.ndarray):
-    return (t - t.min()) / (t.max() - t.min())
 
 
 def dict_without_keys(d: dict, keys: list[str]):
@@ -52,11 +159,6 @@ def dict_without_keys(d: dict, keys: list[str]):
 
 def dict_with_keys(d: dict, keys: list[str]):
     return {x: d[x] for x in d if x in keys}
-
-
-def tensor_sum_of_elements_to_one(tensor: torch.Tensor, dim):
-    """Scales elements of the tensor so that the sum is 1."""
-    return tensor / torch.sum(tensor, dim=dim, keepdim=True)
 
 
 def isfloat(x: str):
@@ -90,49 +192,7 @@ def seed_everything(seed: int = 42):
     torch.cuda.manual_seed(seed)
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = True
-    torch.mps.seed(seed)
-
-
-def npy_to_image(npy):
-    return npy.transpose((1, 2, 0))
-
-
-def validate_image(
-    image: np.ndarray | torch.Tensor,
-    allowed_num_channels: tuple[int, ...] = (0, 1, 3, 4),
-) -> None:
-    """Validates that the input image has an appropriate shape and number of channels.
-
-    Args:
-        image: The input image, either as a NumPy array (..., H, W, C) or a Torch tensor (..., C, H, W).
-        allowed_num_channels: A tuple of allowed channel numbers (default: (0, 1, 3, 4)).
-
-    Raises:
-        ValueError: If the image format or number of channels is invalid.
-    """
-    HELP_TEXT = (
-        f"Input image must be a NumPy array (..., H, W, C) or a torch tensor (..., C, H, W). "
-        f"Number of channels (C) must be one of {allowed_num_channels}."
-    )
-
-    if isinstance(image, np.ndarray):
-        if image.ndim < 2:
-            raise ValueError(HELP_TEXT)
-        if image.ndim == 2 and 0 in allowed_num_channels:
-            num_channels = 0  # Grayscale image without explicit channel dimension
-        elif image.ndim == 3:
-            _, _, num_channels = image.shape  # (H, W, C)
-        else:
-            raise ValueError(HELP_TEXT)
-    elif isinstance(image, torch.Tensor):
-        if image.ndim not in {3, 4}:  # Must be (C, H, W) or (B, C, H, W)
-            raise ValueError(HELP_TEXT)
-        num_channels = image.shape[-3]  # Extract channel dimension (C)
-    else:
-        raise TypeError("Image must be either a NumPy array or a Torch tensor.")
-
-    if num_channels not in allowed_num_channels:
-        raise ValueError(HELP_TEXT)
+    torch.mps.manual_seed(seed)
 
 
 def is_between_0_1(x):
@@ -251,6 +311,45 @@ def all_args(cls):
         return cls(*args, **kwargs)
 
     return wrapper
+
+
+class HumanBytes:
+    """
+    Utility class to format bytes into human readable strings.
+    Uses metric (SI) units by default (KB, MB, GB) rather than binary units (KiB, MiB, GiB).
+    """
+
+    METRIC_LABELS = ["B", "KB", "MB", "GB", "TB", "PB", "EB"]
+    BINARY_LABELS = ["B", "KiB", "MiB", "GiB", "TiB", "PiB", "EiB"]
+    METRIC_UNIT = 1000.0
+    BINARY_UNIT = 1024.0
+
+    @staticmethod
+    def format(num_bytes: int | float, metric: bool = True, precision: int = 1) -> str:
+        """
+        Format bytes into human readable string.
+
+        Args:
+            num_bytes: Number of bytes to format
+            metric: If True, use metric (SI) units (KB, MB, GB), else use binary units (KiB, MiB, GiB)
+            precision: Number of decimal places to show
+
+        Returns:
+            Formatted string like "1.5 MB" or "2 GiB"
+        """
+        unit = HumanBytes.METRIC_UNIT if metric else HumanBytes.BINARY_UNIT
+        labels = HumanBytes.METRIC_LABELS if metric else HumanBytes.BINARY_LABELS
+
+        if num_bytes < unit:
+            return f"{num_bytes} {labels[0]}"
+
+        exponent = min(int(math.log(num_bytes, unit)), len(labels) - 1)
+        quotient = float(num_bytes) / (unit**exponent)
+
+        if quotient.is_integer():
+            precision = 0
+
+        return f"{quotient:.{precision}f} {labels[exponent]}"
 
 
 nato_alphabet = [
@@ -387,7 +486,11 @@ adjectives = [
 
 
 def random_codeword(num_numbers=2) -> str:
-    """Examples: YoungAlpha55, WiseZulu17, CozyBravo53"""
+    """
+    Examples: BraveMike09, NobleWhiskey17, CuteBravo53
+
+    Might be useful for naming your children or pets! 👶🐶
+    """
     name = f"{random.choice(adjectives).upper()}_{random.choice(nato_alphabet).upper()}"
     if num_numbers == 0:
         return name
