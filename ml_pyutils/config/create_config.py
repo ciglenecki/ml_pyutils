@@ -1,6 +1,6 @@
 import os
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import SecretStr, ValidationError, field_validator, validator
 from pydantic_settings import BaseSettings
@@ -23,16 +23,70 @@ class PydanticConfig(BaseSettings):
     ENV: ENV_VALUE_TYPE
     SERVICE_NAME: Literal["<INSERT_NAME>"] = "<INSERT_NAME>"
 
-
     @field_validator("*", mode="after")
     def empty_str_to_none(cls, v):
         if v == "":
             return None
         return v
 
+    @field_validator("device", mode="after")
+    @classmethod
+    def _validate_torch_device_str(cls, v: Any) -> str:
+        import torch
+
+        if not isinstance(v, str):
+            raise TypeError(f"device field must be a string, got {type(v).__name__!r}")
+
+        try:
+            dev = torch.device(v)
+        except (TypeError, ValueError) as e:
+            raise ValueError(f"Invalid torch device string {v!r}: {e}") from e
+
+        # enforce CUDA index bounds
+        if dev.type == "cuda" and dev.index is not None:
+            n = torch.cuda.device_count()
+            if not (0 <= dev.index < n):
+                raise ValueError(
+                    f"cuda device index {dev.index} out of range (0..{n - 1})"
+                )
+
+        return v
+
+    @field_validator("input_size", mode="before")
+    @classmethod
+    def parse_input_size(cls, v):
+        """Parse input_size from comma-separated strings to tuples."""
+        if isinstance(v, list):
+            result = []
+            for item in v:
+                if isinstance(item, str):
+                    # Split by comma and convert to integers
+                    try:
+                        tuple_values = tuple(int(x.strip()) for x in item.split(","))
+                        result.append(tuple_values)
+                    except (ValueError, AttributeError) as e:
+                        raise ValueError(
+                            f"Invalid input_size format: {item}. Expected comma-separated integers."
+                        ) from e
+                elif isinstance(item, (list, tuple)):
+                    # Already a sequence, convert to tuple
+                    result.append(tuple(item))
+                else:
+                    raise ValueError(
+                        f"Invalid input_size item type: {type(item)}. Expected string or sequence."
+                    )
+            return result
+        elif isinstance(v, str):
+            # Single string, convert to list with one tuple
+            tuple_values = tuple(int(x.strip()) for x in v.split(","))
+            return [tuple_values]
+        else:
+            raise ValueError(
+                f"Invalid input_size type: {type(v)}. Expected list or string."
+            )
+
     def model_post_init(self, __context) -> None:
         pass
-
 
 
 def loc_to_dot_sep(loc: tuple[str | int, ...]) -> str:
@@ -79,7 +133,9 @@ class ConfigSingleton(metaclass=Singleton):
             )
             print(self.config.model_dump_json())
         except ValidationError as e:
-            bad_env_vars = [f'{loc_to_dot_sep(e["loc"])}: {e["type"]}' for e in e.errors()]
+            bad_env_vars = [
+                f"{loc_to_dot_sep(e['loc'])}: {e['type']}" for e in e.errors()
+            ]
             bad_env_str = "\n".join(bad_env_vars)
             msg = (
                 f"\n\nInvalid enviroment variables. "
