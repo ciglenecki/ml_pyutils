@@ -125,7 +125,6 @@ class ConfigSingleton(metaclass=Singleton):
         if env_files is None:
             env_files = [Path(".env")]
 
-        env_files.insert(0, Path(".env.local"))
         try:
             self.config = PydanticConfig(
                 _env_file=env_files,  # type: ignore
