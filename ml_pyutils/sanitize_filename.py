@@ -32,27 +32,21 @@ WINDOWS_RESERVED_NAMES = frozenset(
 
 def sanitize_filename(
     filename: str,
-    preserve_extension: bool = True,
     fallback_filename: str | None = None,
-    max_ext_parts: int = 2,
+    max_ext_parts: int = 3,
     max_filename_length: int = 255,
-    max_extension_length: int = 10,
-    min_name_bytes: int = 10,
 ) -> str:
-    """
-    Sanitize filename for cross-platform compatibility.
+    """Sanitize filename for cross-platform compatibility.
 
-    Handles invalid chars, reserved names, Unicode normalization, path traversal,
-    length limits, multi-part extensions, and hidden files.
+    Strategy: Truncate name first, then extension only if name becomes empty.
     """
-
     if fallback_filename is None:
         fallback_filename = "unnamed.txt"
 
     if not filename or not isinstance(filename, str):
         return fallback_filename
 
-    # normalize unicode: NFC + strip combining marks (café́ -> café)
+    # normalize unicode: NFC + strip combining marks
     nfd = unicodedata.normalize("NFD", filename.strip())
     filename = unicodedata.normalize(
         "NFC", "".join(c for c in nfd if unicodedata.category(c) != "Mn")
@@ -90,34 +84,41 @@ def sanitize_filename(
         parts = name_part.split(".", 1)
         name_part = f"{parts[0].strip()}_" + (f".{parts[1]}" if len(parts) > 1 else "")
 
-    # validate extension: ensure dot prefix, reject empty, truncate if needed
+    # validate extension
     if ext_part:
         ext_part = ext_part if ext_part.startswith(".") else f".{ext_part}"
         if ext_part == ".":
             ext_part = ""
-        elif not preserve_extension and len(ext_part) > max_extension_length:
-            ext_part = ext_part[:max_extension_length]
 
-    # truncate to byte limit (handles multi-byte UTF-8 characters)
-    total_bytes = len(name_part.encode("utf-8")) + len(ext_part.encode("utf-8"))
+    # truncate to 255 bytes: name first, then extension if name would be empty
+    name_bytes = name_part.encode("utf-8")
+    ext_bytes = ext_part.encode("utf-8")
+    total_bytes = len(name_bytes) + len(ext_bytes)
+
     if total_bytes > max_filename_length:
-        ext_byte_len = len(ext_part.encode("utf-8"))
+        # calculate space for name after reserving extension
+        available_for_name = max_filename_length - len(ext_bytes)
 
-        # drop extension if it doesn't leave enough space for name
-        if not preserve_extension and ext_byte_len > max_filename_length - min_name_bytes:
-            ext_part = ""
-            ext_byte_len = 0
-
-        # truncate name at UTF-8 boundary
-        max_name_bytes = max_filename_length - ext_byte_len
-        name_bytes = name_part.encode("utf-8")[:max_name_bytes]
-        name_part = name_bytes.decode("utf-8", errors="ignore")
+        if available_for_name > 0:
+            # truncate name, keep full extension
+            name_part = name_bytes[:available_for_name].decode("utf-8", errors="ignore")
+        else:
+            # extension alone exceeds limit, truncate extension and keep minimal name
+            min_name_len = min(len(name_bytes), 1)
+            name_part = name_bytes[:min_name_len].decode("utf-8", errors="ignore")
+            available_for_ext = max_filename_length - len(name_part.encode("utf-8"))
+            ext_part = (
+                ext_bytes[:available_for_ext].decode("utf-8", errors="ignore")
+                if available_for_ext > 0
+                else ""
+            )
 
     if not name_part or name_part == ".":
         return f".{fallback_filename}" if is_hidden else fallback_filename
 
     sanitized = f"{name_part}{ext_part}"
     return sanitized if sanitized and sanitized not in (".", "..") else fallback_filename
+
 
 if __name__ == "__main__":
     SANITIZE_FILENAME_TEST_CASES = [
@@ -331,6 +332,8 @@ if __name__ == "__main__":
         ("../", "unnamed.txt"),
         ("./.", "unnamed.txt"),
         ("....//..././././..", "unnamed.txt"),
+        ("ab." + "x" * 255, "a." + "x" * 253),  # total length 255 bytes
+        ("ab." + "x" * 257, "a." + "x" * 253),  # total length 255 bytes
     ]
 
     LONG_FILENAME_CASES = [("x" * n + ".txt", None) for n in range(250, 260)]
