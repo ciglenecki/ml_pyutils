@@ -39,20 +39,31 @@ class TimedTextResult(unittest.TextTestResult):
         if meth_name:
             dotted += f".{meth_name}"
 
-        return f"\nfile: {file_path}\nmodule: {dotted})" if file_path else f"\nmodule:{dotted}"
+        return (
+            f"\n\t📍 file: {file_path}\n\t📦 module: {dotted})"
+            if file_path
+            else f"\n\tmodule:{dotted}"
+        )
 
     def printErrorList(self, flavour, errors):
         # This is used by unittest to print both FAIL and ERROR sections.
-        for test, err in errors:
+        for i, (test, err) in enumerate(errors):
+            error_flavour = f"{flavour} ({i + 1} / {len(errors)})"
+
+            test_location_string = self._test_location(test)
+            self.stream.writeln(f"❌ {error_flavour}")
+            self.stream.writeln(test_location_string)
+            self.stream.writeln()
+            self.stream.writeln("🐞 " + err)
+            self.stream.writeln(test_location_string)
+            self.stream.writeln()
+            self.stream.writeln(f"🔚 {error_flavour}")
             self.stream.writeln(self.separator1)
-            self.stream.writeln(f"{flavour}: {self._test_location(test)}")
-            self.stream.writeln(self.separator2)
-            self.stream.writeln(err)
 
 
 class TimedTextRunner(unittest.TextTestRunner):
     resultclass = TimedTextResult
-    max_num_prints = 20
+    max_num_prints = 5
 
     def run(self, test):
         result = super().run(test)
